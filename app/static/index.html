@@ -72,13 +72,13 @@
     </header>
 
     <!-- Main Panoramic Workspace: 2 Equal-Height Balanced Columns -->
-    <main class="w-full grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+    <main class="w-full grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-start">
 
       <!-- Left Column: Spatial AR Viewport + Command Deck (7 cols) -->
-      <section class="lg:col-span-7 flex flex-col space-y-3.5">
+      <section class="lg:col-span-7 flex flex-col space-y-3">
         
-        <!-- Viewport Glass Chassis -->
-        <div class="hud-panel p-2.5 sm:p-3 flex-1 flex flex-col justify-between">
+        <!-- Viewport Glass Chassis (Action bar directly attached under camera) -->
+        <div class="hud-panel p-2.5 sm:p-3 flex flex-col space-y-2.5">
           
           <!-- AR Camera Viewport -->
           <div class="viewport-wrapper">
@@ -117,8 +117,8 @@
             </div>
           </div>
 
-          <!-- Integrated Action Deck (Seamlessly Inside Same Chassis) -->
-          <div class="mt-3 pt-3 border-t border-cyan-500/20 space-y-2.5">
+          <!-- Integrated Action Deck (Seamlessly Attached Right After Camera) -->
+          <div class="mt-2.5 pt-2.5 border-t border-cyan-500/20 space-y-2">
             
             <!-- Master Input Bar -->
             <div class="flex items-center gap-2">
@@ -182,10 +182,10 @@
       </section>
 
       <!-- Right Column: Intelligence Core & Spatial Telemetry Deck (5 cols) -->
-      <section class="lg:col-span-5 flex flex-col space-y-3.5">
+      <section class="lg:col-span-5 flex flex-col space-y-3">
         
         <!-- Symmetrical Right Panel Chassis -->
-        <div class="hud-panel p-3 sm:p-4 flex-1 flex flex-col justify-between space-y-3">
+        <div class="hud-panel p-3 sm:p-4 flex flex-col space-y-3">
           
           <!-- Layer 1: Astra Voice & Thought Hub -->
           <div class="p-3 rounded-2xl bg-black/60 border border-cyan-500/25 space-y-2.5">
