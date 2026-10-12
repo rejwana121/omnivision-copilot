@@ -12,7 +12,7 @@ from app.schemas import (
 
 
 class MultimodalVisionEngine:
-    """Processes live camera frames using Gemini 1.5 Flash Multimodal Vision."""
+    """Processes live camera frames using Gemini Multimodal Vision with auto-cascading fallback."""
 
     def __init__(self):
         self.api_key = config.GEMINI_API_KEY
@@ -29,15 +29,12 @@ class MultimodalVisionEngine:
             try:
                 return await self._call_gemini_vision(image_base64, prompt, mode, start_time)
             except Exception as e:
-                # Graceful fallback to simulator with error notice
-                print(f"[OmniVision] Gemini API error: {e}. Falling back to Smart Simulator.")
-                return self._simulate_vision_response(prompt, mode, start_time, notice=f"(API Fallback: {str(e)[:60]}...)")
+                print(f"[OmniVision] Gemini API error across all candidates: {e}.")
+                return self._simulate_vision_response(prompt, mode, start_time, notice=f"(API Notice: {str(e)[:60]}...)")
         else:
             return self._simulate_vision_response(prompt, mode, start_time)
 
     async def _call_gemini_vision(self, image_base64: str, user_prompt: str, mode: str, start_time: float) -> VisionAnalysisResponse:
-        endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
-
         system_instruction = """You are OmniVision Copilot, an elite real-time multimodal vision assistant (Project Astra class).
 You see physical real-world objects through the user's camera.
 
@@ -90,61 +87,99 @@ Respond ONLY with raw JSON."""
             }
         }
 
+        # Candidate models cascade (if one hits 429 quota or 503, immediately try the next)
+        candidate_models = [
+            self.model_name,
+            "gemini-3.5-flash-lite",
+            "gemini-3-flash-preview",
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash"
+        ]
+
+        seen = set()
+        models_to_try = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
+        last_error = None
+        quota_hit_all = True
+
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(endpoint, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            for model in models_to_try:
+                endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
+                try:
+                    resp = await client.post(endpoint, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+                        clean_json = re.sub(r"^```json\s*", "", raw_text.strip(), flags=re.MULTILINE)
+                        clean_json = re.sub(r"```$", "", clean_json.strip(), flags=re.MULTILINE)
+                        parsed = json.loads(clean_json)
 
-            raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-            clean_json = re.sub(r"^```json\s*", "", raw_text.strip(), flags=re.MULTILINE)
-            clean_json = re.sub(r"```$", "", clean_json.strip(), flags=re.MULTILINE)
-            parsed = json.loads(clean_json)
+                        elapsed_ms = (time.perf_counter() - start_time) * 1000
 
+                        annotations = []
+                        for item in parsed.get("annotations", []):
+                            label = item.get("label", "Target Object")
+                            color = item.get("color", "#00ffcc")
+                            desc = item.get("description", label)
+
+                            if "box_2d" in item and isinstance(item["box_2d"], list) and len(item["box_2d"]) == 4:
+                                coords = item["box_2d"]
+                                ymin, xmin, ymax, xmax = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
+                            elif "box" in item and isinstance(item["box"], dict):
+                                b = item["box"]
+                                ymin = int(b.get("ymin", 200))
+                                xmin = int(b.get("xmin", 200))
+                                ymax = int(b.get("ymax", 800))
+                                xmax = int(b.get("xmax", 800))
+                                label = b.get("label", label)
+                                color = b.get("color", color)
+                            elif "box" in item and isinstance(item["box"], list) and len(item["box"]) == 4:
+                                coords = item["box"]
+                                ymin, xmin, ymax, xmax = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
+                            else:
+                                ymin, xmin, ymax, xmax = 200, 200, 800, 800
+
+                            annotations.append(VisionAnnotation(
+                                box=BoundingBox(
+                                    ymin=max(0, min(1000, ymin)),
+                                    xmin=max(0, min(1000, xmin)),
+                                    ymax=max(0, min(1000, ymax)),
+                                    xmax=max(0, min(1000, xmax)),
+                                    label=label,
+                                    color=color
+                                ),
+                                description=desc,
+                                confidence=0.98
+                            ))
+
+                        return VisionAnalysisResponse(
+                            spoken_text=parsed.get("spoken_text", "I have analyzed your visual target."),
+                            detailed_markdown=parsed.get("detailed_markdown", ""),
+                            annotations=annotations,
+                            latency_ms=round(elapsed_ms, 1),
+                            model_used=model
+                        )
+                    else:
+                        err_msg = resp.text[:120]
+                        print(f"[OmniVision] Model '{model}' returned HTTP {resp.status_code}: {err_msg}. Cascading...")
+                        if resp.status_code != 429:
+                            quota_hit_all = False
+                        last_error = f"HTTP {resp.status_code}"
+                except Exception as ex:
+                    print(f"[OmniVision] Model '{model}' error: {ex}. Cascading...")
+                    quota_hit_all = False
+                    last_error = str(ex)
+
+        if quota_hit_all:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
-
-            annotations = []
-            for item in parsed.get("annotations", []):
-                label = item.get("label", "Target Object")
-                color = item.get("color", "#00ffcc")
-                desc = item.get("description", label)
-
-                if "box_2d" in item and isinstance(item["box_2d"], list) and len(item["box_2d"]) == 4:
-                    coords = item["box_2d"]
-                    ymin, xmin, ymax, xmax = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
-                elif "box" in item and isinstance(item["box"], dict):
-                    b = item["box"]
-                    ymin = int(b.get("ymin", 200))
-                    xmin = int(b.get("xmin", 200))
-                    ymax = int(b.get("ymax", 800))
-                    xmax = int(b.get("xmax", 800))
-                    label = b.get("label", label)
-                    color = b.get("color", color)
-                elif "box" in item and isinstance(item["box"], list) and len(item["box"]) == 4:
-                    coords = item["box"]
-                    ymin, xmin, ymax, xmax = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
-                else:
-                    ymin, xmin, ymax, xmax = 200, 200, 800, 800
-
-                annotations.append(VisionAnnotation(
-                    box=BoundingBox(
-                        ymin=max(0, min(1000, ymin)),
-                        xmin=max(0, min(1000, xmin)),
-                        ymax=max(0, min(1000, ymax)),
-                        xmax=max(0, min(1000, xmax)),
-                        label=label,
-                        color=color
-                    ),
-                    description=desc,
-                    confidence=0.98
-                ))
-
             return VisionAnalysisResponse(
-                spoken_text=parsed.get("spoken_text", "I have analyzed your visual target."),
-                detailed_markdown=parsed.get("detailed_markdown", ""),
-                annotations=annotations,
+                spoken_text="Google Gemini free tier request quota reached for today. Please wait or generate a new free key at aistudio.google.com.",
+                detailed_markdown="### ⚠️ Gemini Free Tier Quota Exhausted\nYour Google AI Studio free tier quota (requests per day) has been reached across all models.\n\n**To continue scanning:**\n1. Visit [Google AI Studio](https://aistudio.google.com/) and create a fresh free API key.\n2. Paste it in your `.env` file as `GEMINI_API_KEY=...`.\n3. Save and refresh the page.",
+                annotations=[],
                 latency_ms=round(elapsed_ms, 1),
-                model_used=self.model_name
+                model_used="quota-exhausted"
             )
+
+        raise Exception(f"All vision models failed. Last error: {last_error}")
 
     def _simulate_vision_response(self, prompt: str, mode: str, start_time: float, notice: str = "") -> VisionAnalysisResponse:
         """High-fidelity spatial simulator for zero-key instant local demo."""
